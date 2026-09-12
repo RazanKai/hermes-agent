@@ -130,6 +130,14 @@ VALID_HOOKS: Set[str] = {
     # auth/pairing and dispatch. Kwargs: event, gateway, session_store. Return {"action": "skip",
     # "reason"} -> drop; {"action": "rewrite", "text"} -> replace event.text; "allow"/None -> normal.
     "pre_gateway_dispatch",
+    # resolve_turn_route: once per turn after _resolve_turn_agent_config builds the
+    # configured route and BEFORE _resolve_turn_agent compares the cache signature
+    # (gateway/run_route_hook.py). A consumer returns a replacement route dict
+    # ({model: str, runtime: dict}) or None to keep the configured route; first
+    # valid dict wins, invalid results and hook failures keep the configured route.
+    # Concrete consumer: the out-of-tree GPU model router (fast policy only —
+    # cold preparation runs as a dedicated gateway operation, never in this hook).
+    "resolve_turn_route",
     # Approval observers (tools/approval.py); returns ignored — plugins cannot veto or pre-answer
     # (use pre_tool_call). Kwargs: command, description, pattern_key, pattern_keys, session_key,
     # surface: "cli"|"gateway"|"smart"; post_approval_response adds choice ("once"|"session"|

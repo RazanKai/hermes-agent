@@ -42,6 +42,19 @@ def _tuple_agent(entry: Any) -> Any:
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
+    def _resolve_effective_turn_route(
+        self, session_key: str | None, turn_route: dict,
+        *, platform: str | None = None, message_chars: int = 0,
+    ) -> dict:
+        """Effective route for one turn: configured route through the generic
+        ``resolve_turn_route`` hook (gateway/run_route_hook.py), BEFORE the
+        cached-agent signature comparison. No consumer → identical route."""
+        from gateway.run_route_hook import resolve_turn_route
+        return resolve_turn_route(
+            session_key, turn_route,
+            turn_metadata={"platform": platform, "message_chars": message_chars},
+        )
+
     @classmethod
     def _extract_honcho_cache_busting_config(cls) -> dict[str, Any]:
         """Extract Honcho identity keys, memoized by honcho.json mtime; all-None when unavailable."""
