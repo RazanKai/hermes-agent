@@ -45,14 +45,22 @@ class GatewayAgentCacheMixin:
     def _resolve_effective_turn_route(
         self, session_key: str | None, turn_route: dict,
         *, platform: str | None = None, message_chars: int = 0,
+        needs_multimodal: bool = False, max_context_tokens: int | None = None,
     ) -> dict:
         """Effective route for one turn: configured route through the generic
         ``resolve_turn_route`` hook (gateway/run_route_hook.py), BEFORE the
-        cached-agent signature comparison. No consumer → identical route."""
+        cached-agent signature comparison. No consumer → identical route.
+
+        ``turn_metadata`` carries only non-content turn FACTS. ``needs_multimodal``
+        is a hard lane constraint downstream, so it must be stated here: without it
+        a text-only lane could be selected for a turn that carries an image.
+        """
         from gateway.run_route_hook import resolve_turn_route
         return resolve_turn_route(
             session_key, turn_route,
-            turn_metadata={"platform": platform, "message_chars": message_chars},
+            turn_metadata={"platform": platform, "message_chars": message_chars,
+                           "needs_multimodal": bool(needs_multimodal),
+                           "max_context_tokens": max_context_tokens},
         )
 
     @classmethod

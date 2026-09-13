@@ -42,6 +42,11 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_verify", "on_session_start", "on_session_end",
+    # resolve_turn_route consults external routing state on the turn hot path (the
+    # router plugin performs bounded control-plane calls). Its consumer contract says
+    # the hook must stay fast, but an unlisted hook runs synchronously to completion —
+    # so a slow gate would stall the turn rather than being abandoned at the cap.
+    "resolve_turn_route",
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).

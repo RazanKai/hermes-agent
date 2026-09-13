@@ -97,3 +97,46 @@ def test_mixin_helper_delegates_to_hook(monkeypatch):
     route = _route()
     fake_self = object.__new__(GatewayAgentCacheMixin)
     assert helper(fake_self, "s", route, platform="matrix", message_chars=3) is route
+
+
+def test_mixin_helper_forwards_turn_capability_facts(monkeypatch):
+    """A multimodal turn must reach lane selection as a fact, not be inferred.
+
+    ``needs_multimodal`` is a hard lane constraint for the router; when the helper
+    sent only platform/message length, the constraint was unreachable and a
+    text-only lane could serve a turn carrying an image.
+    """
+    from gateway.run_agent_cache import GatewayAgentCacheMixin
+
+    seen = {}
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+
+    def _capture(name, **kw):
+        seen.update(kw)
+        return [None]
+
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _capture)
+    helper = GatewayAgentCacheMixin._resolve_effective_turn_route
+    fake_self = object.__new__(GatewayAgentCacheMixin)
+    helper(fake_self, "s", _route(), platform="matrix", message_chars=3,
+           needs_multimodal=True, max_context_tokens=200_000)
+    assert seen["turn_metadata"]["needs_multimodal"] is True
+    assert seen["turn_metadata"]["max_context_tokens"] == 200_000
+
+
+def test_background_task_session_key_call_shape():
+    """/bg passed ONE argument to a two-argument method, killing every /bg task.
+
+    Argument binding is the failure, so assert it directly rather than relying on
+    a full background-task run.
+    """
+    import inspect
+
+    from gateway.run import GatewayRunner
+
+    params = list(inspect.signature(
+        GatewayRunner._resolve_session_key_or_none).parameters)
+    assert params == ["self", "source", "session_key"], params
+    runner = object.__new__(GatewayRunner)
+    # The fixed call shape must bind.
+    runner._resolve_session_key_or_none(None, None)
