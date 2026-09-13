@@ -8,7 +8,10 @@ mean a byte-identical route (standard behavior unchanged).
 import pytest
 
 from gateway import run_route_hook
+from gateway.config import Platform
 from gateway.run_route_hook import ROUTING_API_VERSION, resolve_turn_route
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 
 def _route(model="base-model", provider="base-provider"):
@@ -140,3 +143,94 @@ def test_background_task_session_key_call_shape():
     runner = object.__new__(GatewayRunner)
     # The fixed call shape must bind.
     runner._resolve_session_key_or_none(None, None)
+
+
+def test_main_turn_call_site_forwards_multimodal_and_context():
+    """The MAIN turn call must state its real requirements, not just the /bg path.
+
+    The review found the main call site at gateway/run_turn_runner.py supplied
+    neither modality nor context, so a text-only lane could serve a turn
+    carrying an image. Driving the real TurnRunner body is the only way to prove
+    the call SITE passes them (a direct helper call works on the unfixed
+    revision too).
+    """
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    seen = {}
+
+    class _Runner(MagicMock):
+        _provider_routing = {}
+
+        def _resolve_session_agent_runtime(self, **_kw):
+            return "local-model", {"api_key": "k", "base_url": "http://x/v1"}
+
+        def _resolve_session_reasoning_config(self, **_kw):
+            return None
+
+        def _resolve_session_service_tier(self, **_kw):
+            return None
+
+        def _resolve_turn_agent_config(self, _msg, model, _rt):
+            return {"model": model, "runtime": {"base_url": "http://x/v1"}}
+
+        def _resolve_effective_turn_route(self, session_key, route, **kw):
+            seen["session_key"] = session_key
+            seen["kwargs"] = kw
+            raise RuntimeError("stop here: route resolution captured")
+
+        # Native image buffer: this session has pixels buffered for the turn.
+        def _pending_native_image_paths(self, session_key):
+            return ["/tmp/pic.png"] if session_key == "sess-img" else []
+
+        def _consume_pending_native_image_paths(self, session_key):
+            return []
+
+    runner = _Runner()
+    runner.config = SimpleNamespace(streaming=None)
+    runner._get_system_prompt_for_channel.return_value = None
+
+    ctx = TurnContext(
+        source=SimpleNamespace(platform=Platform.LOCAL, chat_id="c", user_id="u"),
+        message="look at this",
+        history=[{"role": "user", "content": "earlier question"},
+                 {"role": "assistant", "content": "earlier answer"}],
+        session_id="sid", session_key="sess-img", user_config={},
+        AIAgent=None, resolve_display_setting=lambda *_a: False,
+        _run_still_current=lambda: True,
+        _hooks_ref=SimpleNamespace(loaded_hooks=False),
+    )
+    with pytest.raises(RuntimeError):
+        TurnRunner(runner, ctx).run_sync()
+
+    assert seen["session_key"] == "sess-img"
+    assert seen["kwargs"]["needs_multimodal"] is True, (
+        "the main turn call did not tell the router the turn carries an image")
+    # Context requirement is the turn's real size, so a too-small lane is
+    # rejected rather than selected on score alone.
+    assert isinstance(seen["kwargs"]["max_context_tokens"], int)
+    assert seen["kwargs"]["max_context_tokens"] >= 10
+
+    # The peek must NOT consume the buffer: those same paths are attached to the
+    # request later by _native_image_run_message.
+    consumed = []
+    ctx2 = TurnContext(source=ctx.source, message="m", history=[], session_id="s",
+                       session_key="sess-img", user_config={}, AIAgent=None,
+                       resolve_display_setting=lambda *_a: False,
+                       _run_still_current=lambda: True,
+                       _hooks_ref=SimpleNamespace(loaded_hooks=False))
+
+    class _Peek(_Runner):
+        def _resolve_effective_turn_route(self, session_key, route, **kw):
+            return route
+
+        def _pending_native_image_paths(self, session_key):
+            return ["/tmp/pic.png"]
+
+        def _consume_pending_native_image_paths(self, session_key):
+            consumed.append(session_key)
+            return []
+
+    facts = TurnRunner(_Peek(), ctx2)._turn_route_facts("cli", "m")
+    assert facts["needs_multimodal"] is True
+    assert consumed == [], "the route hook consumed the image buffer"

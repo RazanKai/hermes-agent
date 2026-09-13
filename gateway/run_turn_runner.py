@@ -1693,6 +1693,33 @@ class TurnRunner:
         unique_tags = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(dict.fromkeys(media_tags))
         return final_response + "\n" + "\n".join(unique_tags)
 
+    def _turn_route_facts(self, platform_key: str, message: Optional[str]) -> dict:
+        """Non-content turn FACTS the route hook needs to select a lane correctly.
+
+        ``needs_multimodal`` must be stated here or a text-only lane can serve a
+        turn carrying an image: the pixels are attached later (native image
+        buffering is consumed at ``run_conversation``), so the hook has no other
+        way to see them. ``max_context_tokens`` is the turn's required context —
+        a lane that cannot hold it is unusable regardless of score.
+
+        Deliberately non-consuming (``_pending_native_image_paths``): the buffer
+        is the same one ``_native_image_run_message`` attaches from.
+        """
+        needs_multimodal = False
+        try:
+            needs_multimodal = bool(self._runner._pending_native_image_paths(self._ctx.session_key))
+        except Exception:
+            logger.debug("turn route facts: native image peek failed", exc_info=True)
+        max_context_tokens = None
+        try:
+            from agent.model_metadata import estimate_messages_tokens_rough
+            history = self._ctx.history if isinstance(self._ctx.history, list) else []
+            probe = list(history) + [{"role": "user", "content": message or ""}]
+            max_context_tokens = estimate_messages_tokens_rough(probe)
+        except Exception:
+            logger.debug("turn route facts: context estimate failed", exc_info=True)
+        return {"needs_multimodal": needs_multimodal, "max_context_tokens": max_context_tokens}
+
     def run_sync(self):
         """Executor-thread body of the turn; returns the gateway result dict.
 
@@ -1736,6 +1763,7 @@ class TurnRunner:
         turn_route = runner._resolve_effective_turn_route(
             ctx.session_key, turn_route, platform=platform_key,
             message_chars=len(ctx.message or ""),
+            **self._turn_route_facts(platform_key, ctx.message),
         )
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,

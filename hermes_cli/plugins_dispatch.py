@@ -226,6 +226,14 @@ class PluginDispatchMixin:
 
         context = contextvars.copy_context()
         done = threading.Event()
+        # Cooperative cancellation is part of the callback payload. A timeout may
+        # abandon Python work, but a stateful consumer must see the same deadline
+        # and decline its commit rather than applying a late side effect (R20).
+        cancel_event = threading.Event()
+        deadline_epoch = time.time() + timeout
+        callback_kwargs = dict(kwargs)
+        callback_kwargs["hook_cancel_event"] = cancel_event
+        callback_kwargs["hook_deadline_epoch"] = deadline_epoch
         outcome: Dict[str, Any] = {}
         failure: Dict[str, Exception] = {}
 
@@ -236,7 +244,8 @@ class PluginDispatchMixin:
 
         def _runner() -> None:
             try:
-                outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
+                outcome["value"] = context.run(
+                    self._invoke_hook_callback, cb, callback_kwargs)
             except Exception as exc:
                 failure["exc"] = exc
             finally:
@@ -253,6 +262,7 @@ class PluginDispatchMixin:
                 hook_name, callback_name, exc)
             return _HOOK_SKIPPED
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
+            cancel_event.set()
             with self._hook_timeout_lock:
                 # See #6622.
                 self._hook_timeout_suppressed_until[callback_key] = (

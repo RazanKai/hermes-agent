@@ -1656,6 +1656,16 @@ class GatewayInboundMixin:
         _, successful_transcripts = await self._transcribe_pending_audio_event_once(event, "")
         return "\n\n".join(t.strip() for t in successful_transcripts if t.strip())
 
+    def _pending_native_image_paths(self, session_key: str) -> List[str]:
+        """Non-consuming read of this session's buffered native image paths.
+
+        Route resolution runs BEFORE ``_native_image_run_message`` consumes the
+        buffer, and the router needs to know the turn carries pixels at that
+        point. Consuming here would drop the images from the actual request.
+        """
+        state = self._peek_session_state(session_key)
+        return list(state.persistent.native_image_paths or []) if state is not None else []
+
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         state = self._peek_session_state(session_key)
         paths = list(state.persistent.native_image_paths or []) if state is not None else []
