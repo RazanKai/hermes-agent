@@ -1693,6 +1693,51 @@ class TurnRunner:
         unique_tags = (["[[audio_as_voice]]"] if has_voice_directive else []) + list(dict.fromkeys(media_tags))
         return final_response + "\n" + "\n".join(unique_tags)
 
+    def _observe_prefix_triple(self, turn_route: dict) -> dict:
+        """Record the FR-22 prefix triple for a local-route turn (never raises).
+
+        Cost on the local route is prefill-of-delta only while the rendered prefix
+        matches resident KV entries, and the failure mode is silent: a shifted
+        prefix still produces a working turn, just an uncached one. So this
+        observes and logs; it does not gate or alter the request.
+
+        Only the model name and the system/tool components are involved — no
+        message content is hashed or logged.
+        """
+        try:
+            from gateway.prefix_freeze import freeze_for, is_local_route
+        except Exception:
+            return {}
+        try:
+            import os
+
+            runtime = turn_route.get("runtime") or {}
+            gate_base = os.environ.get("HERMES_MODEL_ROUTER_URL", "").rstrip("/")
+            if not is_local_route(str(turn_route.get("model") or ""),
+                                  str(runtime.get("base_url") or ""), gate_base):
+                return {}
+            ctx = self._ctx
+            session_key = ctx.session_key or ""
+            freeze = freeze_for(session_key)
+            # Components available at this point without rebuilding the prompt:
+            # the tool set this turn will send, and the route's model identity.
+            tools = list(getattr(ctx, "enabled_toolsets", None) or [])
+            report = freeze.observe(
+                template_content=str(turn_route.get("model") or ""),
+                stable_system=str(ctx.context_prompt or ""),
+                tool_names=tools,
+                tool_definitions=[],
+            )
+            ctx.prefix_triple = report
+            if report.get("prefix_invalidated"):
+                logger.info("FR-22: prefix invalidated for session %s (%s)",
+                            session_key, ", ".join(report.get("changed") or []))
+            return report
+        except Exception as exc:
+            # Observability must never break a turn.
+            logger.debug("FR-22 prefix observation skipped: %s", exc)
+            return {}
+
     def _turn_route_facts(self, platform_key: str, message: Optional[str]) -> dict:
         """Non-content turn FACTS the route hook needs to select a lane correctly.
 
@@ -1765,6 +1810,10 @@ class TurnRunner:
             message_chars=len(ctx.message or ""),
             **self._turn_route_facts(platform_key, ctx.message),
         )
+        # FR-22 §1/§7: on the LOCAL route, observe the prefix triple every turn so
+        # a shift is logged rather than silently costing a full reprefill. Scoped
+        # to the gate route: no other provider's prefix behaviour changes.
+        self._observe_prefix_triple(turn_route)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
