@@ -684,6 +684,68 @@ class PluginContext:
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)
 
+    def schedule_gateway_operation(
+        self, name: str, coro, *, timeout: float = 300.0,
+    ):
+        """Run *coro* on the gateway's event loop as a bounded background operation.
+
+        For a plugin operation that is too slow for the turn hot path but too
+        important to abandon. A hook callback runs on a daemon worker under a
+        wall-clock cap: when it exceeds the cap the dispatcher *abandons* it and
+        the work continues unsupervised — which is unacceptable for something
+        that mutates external state (a model load, a provisioning call). Routing
+        such work here instead means the turn returns immediately, the operation
+        has its OWN timeout, and the gateway owns the task (visible in
+        ``_background_tasks``, cancelled on shutdown) rather than a detached
+        thread nothing can reach.
+
+        Returns a ``concurrent.futures.Future``, or None when no gateway loop is
+        running (CLI/TUI: the caller keeps its synchronous fallback).
+        """
+        manager = self._manager
+        runner = getattr(manager, "_gateway_runner", None) or getattr(manager, "_cli_ref", None)
+        loop = getattr(runner, "_loop", None) or getattr(manager, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            logger.debug("Plugin %s: no gateway loop for operation %r",
+                         self.manifest.name, name)
+            return None
+        import asyncio
+
+        async def _bounded():
+            try:
+                return await asyncio.wait_for(coro, timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.warning("Plugin %s: gateway operation %r exceeded %.0fs",
+                               self.manifest.name, name, timeout)
+                return None
+            except Exception as exc:
+                logger.warning("Plugin %s: gateway operation %r failed: %s",
+                               self.manifest.name, name, exc)
+                return None
+
+        async def _own_and_run():
+            """Create the task ON the loop so the gateway owns it, then await it."""
+            task = loop.create_task(_bounded())
+            background = getattr(runner, "_background_tasks", None)
+            if background is not None:
+                background.add(task)
+                task.add_done_callback(background.discard)
+            return await task
+
+        try:
+            if loop.is_running():
+                # Off-loop caller (the plugin's hook worker): hand the *coroutine*
+                # to the loop. Passing an already-created Task here is invalid —
+                # it is not awaited by the target loop, and run_coroutine_threadsafe
+                # requires a coroutine.
+                return asyncio.run_coroutine_threadsafe(_own_and_run(), loop)
+            # On-loop caller: create the task directly.
+            return loop.create_task(_own_and_run())
+        except Exception as exc:
+            logger.warning("Plugin %s: could not schedule gateway operation %r: %s",
+                           self.manifest.name, name, exc)
+            return None
+
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a tool call through the registry with the parent agent (when available)
         resolved automatically; returns the handler's JSON string. ``kwargs`` forward to dispatch."""
