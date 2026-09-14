@@ -46,6 +46,7 @@ class GatewayAgentCacheMixin:
         self, session_key: str | None, turn_route: dict,
         *, platform: str | None = None, message_chars: int = 0,
         needs_multimodal: bool = False, max_context_tokens: int | None = None,
+        prefix_hash: str = "", tool_set_version: str = "",
     ) -> dict:
         """Effective route for one turn: configured route through the generic
         ``resolve_turn_route`` hook (gateway/run_route_hook.py), BEFORE the
@@ -54,13 +55,29 @@ class GatewayAgentCacheMixin:
         ``turn_metadata`` carries only non-content turn FACTS. ``needs_multimodal``
         is a hard lane constraint downstream, so it must be stated here: without it
         a text-only lane could be selected for a turn that carries an image.
+
+        ``prefix_hash`` / ``tool_set_version`` are the FR-22 prefix triple, computed
+        by the caller BEFORE this call so the plugin can put them in its FR-20
+        decision record. They are named parameters rather than a ``**kwargs``
+        passthrough on purpose: this signature is the contract between the turn
+        runner and the hook, and a keyword this layer does not declare is a
+        ``TypeError`` at runtime (which is exactly how the missing pair was found —
+        on the first real turn, not in the suite, because the fork's tests drove the
+        hook one layer below this).
         """
         from gateway.run_route_hook import resolve_turn_route
+        metadata = {"platform": platform, "message_chars": message_chars,
+                    "needs_multimodal": bool(needs_multimodal),
+                    "max_context_tokens": max_context_tokens}
+        # Omitted when empty so a non-local route reports NO prefix rather than a
+        # blank one (FR-22 §7), and so an older hook contract is unaffected.
+        if prefix_hash:
+            metadata["prefix_hash"] = prefix_hash
+        if tool_set_version:
+            metadata["tool_set_version"] = tool_set_version
         return resolve_turn_route(
             session_key, turn_route,
-            turn_metadata={"platform": platform, "message_chars": message_chars,
-                           "needs_multimodal": bool(needs_multimodal),
-                           "max_context_tokens": max_context_tokens},
+            turn_metadata=metadata,
         )
 
     @classmethod
