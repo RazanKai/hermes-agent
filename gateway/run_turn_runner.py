@@ -1805,15 +1805,22 @@ class TurnRunner:
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
         stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
+        # FR-22 §1/§7 and FR-12(b): establish the prefix triple at the PRE-CACHE
+        # route-resolution point — before the hook, on the configured route. Two
+        # reasons it cannot happen afterwards: the triple is defined as the
+        # session's frozen-prefix state at the moment the route is decided, and the
+        # hook needs the hash in its metadata so the plugin's decision record can
+        # carry it (FR-20). Computed post-hook, the record could only ever be empty.
+        prefix_report = self._observe_prefix_triple(turn_route)
+        route_facts = self._turn_route_facts(platform_key, ctx.message)
+        route_facts["prefix_hash"] = str((prefix_report or {}).get("prefix_hash") or "")
+        route_facts["tool_set_version"] = str(
+            (prefix_report or {}).get("frozen_tool_set_version") or "")
         turn_route = runner._resolve_effective_turn_route(
             ctx.session_key, turn_route, platform=platform_key,
             message_chars=len(ctx.message or ""),
-            **self._turn_route_facts(platform_key, ctx.message),
+            **route_facts,
         )
-        # FR-22 §1/§7: on the LOCAL route, observe the prefix triple every turn so
-        # a shift is logged rather than silently costing a full reprefill. Scoped
-        # to the gate route: no other provider's prefix behaviour changes.
-        self._observe_prefix_triple(turn_route)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
